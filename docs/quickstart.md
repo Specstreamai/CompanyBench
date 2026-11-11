@@ -70,6 +70,7 @@ are never configuration-file values; CompanyBench does not automatically load a 
 | Avina | `AVINA_API_KEY` |
 | Exa configurations | `EXA_API_KEY` |
 | Parallel configurations | `PARALLEL_API_KEY` |
+| SpecStream | `SPECSTREAM_API_KEY` |
 | OpenAI configurations, independent research, LLM and Decisions judges | `OPENAI_API_KEY` |
 | Claude configurations | `ANTHROPIC_API_KEY` |
 | Gemini configurations | `GEMINI_API_KEY` |

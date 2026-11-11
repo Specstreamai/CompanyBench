@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from companybench.models import Criterion, Query, SearchRequest, Usage
+from companybench.models import Criterion, Query, SearchJob, SearchRequest, Usage
 from companybench.pricing import estimate_cost, estimate_max_cost
 from companybench.providers.common import candidates_from_payload
 from companybench.providers.registry import PRESETS, provider_names, resolve
@@ -46,7 +46,7 @@ def search_request():
 
 
 def test_all_presets_resolve_without_reading_keys():
-    assert len(PRESETS) == 14
+    assert len(PRESETS) == 15
     assert all(resolve(name).name == name for name in PRESETS)
     with pytest.raises(ValueError, match="Unknown provider"):
         resolve("not-a-provider")
@@ -718,3 +718,219 @@ async def test_claude_formatter_finish_reason_is_preserved_even_for_valid_json(
     result = await provider.search(search_request, context)
     assert result.status == expected
     assert result.usage.output_tokens == 20
+
+
+def specstream_find(status="completed", settlement="settled", captured=20):
+    return {
+        "data": {
+            "find_id": "fnd_1",
+            "status": status,
+            "ast_hash": "a" * 64,
+            "requested_count": 50,
+            "accepted_count": 2,
+            "stop_reason": "saturated_discovery",
+            "error_code": None,
+            "commerce": {
+                "find_id": "fnd_1",
+                "settlement_status": settlement,
+                "amount_authorized_cents": 5000,
+                "amount_captured_cents": captured,
+                "amount_refunded_cents": 5000 - captured,
+                "delivered_rows": 2,
+                "billed_units": [
+                    {"id": "ent_a", "unit_cents": 5},
+                    {"id": "ent_b", "unit_cents": 15},
+                ],
+            },
+        }
+    }
+
+
+def specstream_row(entity, name, website, source):
+    return {
+        "spec_version": "accepted_row.v1",
+        "entity_id": entity,
+        "ordinal": 0,
+        "billable": True,
+        "contact_visibility": "full",
+        "cells": [
+            {
+                "column_id": "identity",
+                "label": "Company",
+                "value": name,
+                "display": name,
+                "provenance": {"field_id": "name", "source_url": source},
+            },
+            {
+                "column_id": "organization.website",
+                "label": "Website",
+                "value": website,
+                "display": website,
+                "provenance": {"field_id": "website", "source_url": website},
+            },
+            {"column_id": "organization.city", "label": "City", "value": "Austin", "display": None},
+        ],
+        "predicates": [
+            {
+                "field_id": "c1",
+                "op": "eq",
+                "required_value": True,
+                "observed_value": True,
+                "passed": True,
+                "source_label": "About page",
+                "source_url": source + "#about",
+                "observed_at": "2026-10-06T00:00:00Z",
+            }
+        ],
+    }
+
+
+SPECSTREAM_READING = {"data": {"status": "runnable", "ast_hash": "a" * 64, "read_back": "x"}}
+SPECSTREAM_QUOTE = {
+    "data": {
+        "quote_id": "q1",
+        "quote_hash": "b" * 64,
+        "maximum_cents": 5000,
+        "can_authorize": True,
+    }
+}
+SPECSTREAM_EXECUTION = {
+    "data": {"reservation_id": "r1", "find_id": "fnd_1", "maximum_cents": 5000, "state": "reserved"}
+}
+
+
+@pytest.mark.asyncio
+async def test_specstream_compiles_quotes_and_authorizes_the_quoted_maximum(search_request):
+    provider = resolve("specstream", {"api_key": "test"})
+    context = FakeContext([SPECSTREAM_READING, SPECSTREAM_QUOTE, SPECSTREAM_EXECUTION])
+    job = await provider.submit(search_request, context)
+    assert job.id == "fnd_1" and job.status == "queued"
+    paths = [url.removeprefix("https://api.specstream.ai") for _, url, _ in context.calls]
+    assert paths == ["/v1/parse", "/v1/capacity/quotes", "/v1/capacity/executions"]
+    assert [c[2].get("billable", False) for c in context.calls] == [False, False, True]
+    assert context.calls[1][2]["json"]["requested_units"] == search_request.target_count
+    authorize = context.calls[2][2]["json"]
+    assert authorize["confirm_max_cents"] == 5000
+    assert authorize["quote_hash"] == "b" * 64
+    assert 8 <= len(authorize["idempotency_key"]) <= 128
+    assert context.calls[2][2]["headers"]["Authorization"] == "Bearer test"
+    assert context.load("specstream_quote")["quote_id"] == "q1"
+
+
+@pytest.mark.asyncio
+async def test_specstream_resume_authorizes_the_saved_quote_with_the_same_key(search_request):
+    provider = resolve("specstream", {"api_key": "test"})
+    first = FakeContext([SPECSTREAM_READING, SPECSTREAM_QUOTE, SPECSTREAM_EXECUTION])
+    await provider.submit(search_request, first)
+    resumed = FakeContext([SPECSTREAM_EXECUTION])
+    resumed.checkpoint("specstream_quote", SPECSTREAM_QUOTE["data"])
+    await provider.submit(search_request, resumed)
+    assert len(resumed.calls) == 1
+    assert resumed.calls[0][2]["json"] == first.calls[2][2]["json"]
+
+
+@pytest.mark.asyncio
+async def test_specstream_unrunnable_reading_and_quote_over_cap_start_no_paid_work(
+    search_request,
+):
+    provider = resolve("specstream", {"api_key": "test"})
+    context = FakeContext([{"data": {"status": "needs_edit", "ast_hash": None}}])
+    with pytest.raises(ValueError, match="needs_edit"):
+        await provider.submit(search_request, context)
+    capped = resolve("specstream", {"api_key": "test", "max_cost_usd": 10})
+    context = FakeContext([SPECSTREAM_READING, SPECSTREAM_QUOTE])
+    with pytest.raises(ValueError, match="exceeds max_cost_usd"):
+        await capped.submit(search_request, context)
+    assert not any(c[2].get("billable") for c in context.calls)
+    with pytest.raises(ValueError, match="max_cost_usd"):
+        resolve("specstream", {"max_cost_usd": -1})
+
+
+@pytest.mark.asyncio
+async def test_specstream_reads_every_row_page_with_sources_and_settled_charge(search_request):
+    provider = resolve("specstream", {"api_key": "test"})
+    context = FakeContext(
+        [
+            specstream_find(),
+            {
+                "data": {
+                    "find_id": "fnd_1",
+                    "status": "completed",
+                    "accepted_count": 2,
+                    "entitlement": "full",
+                    "rows": [
+                        specstream_row(
+                            "ent_a", "Alpha", "https://alpha.example", "https://alpha.example/about"
+                        )
+                    ],
+                    "possible": [
+                        {"entity_id": "ent_p", "ordinal": 0, "cells": [], "conditions": []}
+                    ],
+                    "next_cursor": "c1",
+                }
+            },
+            {
+                "data": {
+                    "find_id": "fnd_1",
+                    "status": "completed",
+                    "accepted_count": 2,
+                    "entitlement": "full",
+                    "rows": [
+                        specstream_row(
+                            "ent_b", "Beta", "https://www.beta.example", "https://news.example/beta"
+                        )
+                    ],
+                    "next_cursor": None,
+                }
+            },
+        ]
+    )
+    job = await provider.poll(search_request, SearchJob(id="fnd_1", status="queued"), context)
+    assert job.status == "completed"
+    assert "cursor=c1" in context.calls[-1][1] and "limit=100" in context.calls[-1][1]
+    alpha, beta = job.result.candidates
+    assert (alpha.name, alpha.domain, alpha.native_id) == ("Alpha", "alpha.example", "ent_a")
+    assert beta.domain == "beta.example"
+    assert alpha.citations == [
+        "https://alpha.example/about",
+        "https://alpha.example",
+        "https://alpha.example/about#about",
+    ]
+    assert alpha.claims["organization.city"] == "Austin"
+    assert alpha.claims["conditions"][0]["passed"] is True
+    assert job.result.cost.confirmed_usd == pytest.approx(0.20)
+    assert job.result.cost.public_usd == pytest.approx(0.20)
+    assert job.result.cost.basis == "public_estimate_and_reported_charge"
+    assert len(job.result.raw["pages"][0]["possible"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_specstream_waits_for_settlement_and_keeps_partial_finds_partial(search_request):
+    provider = resolve("specstream", {"api_key": "test"})
+    empty = {"data": {"find_id": "fnd_1", "status": "partial", "rows": [], "next_cursor": None}}
+    context = FakeContext([specstream_find("partial", "pending"), empty])
+    job = await provider.poll(search_request, SearchJob(id="fnd_1", status="running"), context)
+    assert job.status == "running"
+    assert job.result.cost.confirmed_usd is None
+    context = FakeContext([specstream_find("partial", "settled"), empty])
+    job = await provider.poll(search_request, job, context)
+    assert job.status == "completed"
+    assert job.result.status == "partial"
+    assert job.result.cost.confirmed_usd == pytest.approx(0.20)
+
+
+@pytest.mark.asyncio
+async def test_specstream_unknown_status_and_repeated_cursor_fail(search_request):
+    provider = resolve("specstream", {"api_key": "test"})
+    context = FakeContext([{"data": {"find_id": "fnd_1", "status": "imaginary"}}])
+    with pytest.raises(ValueError, match="Unknown SpecStream find status"):
+        await provider.poll(search_request, SearchJob(id="fnd_1", status="queued"), context)
+    page = {"data": {"find_id": "fnd_1", "status": "running", "rows": [], "next_cursor": "same"}}
+    context = FakeContext([specstream_find("running", "none"), page, page])
+    with pytest.raises(ValueError, match="pagination did not advance"):
+        await provider.poll(search_request, SearchJob(id="fnd_1", status="queued"), context)
+
+
+def test_specstream_reservation_uses_the_highest_row_rate_or_cap():
+    assert estimate_max_cost("specstream", 50) == 50
+    assert estimate_max_cost("specstream", 50, {"max_cost_usd": 12}) == 12

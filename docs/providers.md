@@ -16,6 +16,7 @@ environment-variable name; credentials themselves do not belong in TOML.
 | `exa-agent-auto` | Exa Agent, auto effort | `EXA_API_KEY` |
 | `parallel-core` | FindAll, core generator | `PARALLEL_API_KEY` |
 | `parallel-pro` | FindAll, pro generator | `PARALLEL_API_KEY` |
+| `specstream` | Deep Search find, compiled, quoted and authorized | `SPECSTREAM_API_KEY` |
 | `openai-sol-medium` | GPT-6.1 Sol, medium | `OPENAI_API_KEY` |
 | `openai-astra-max` | GPT-6 Astra, max | `OPENAI_API_KEY` |
 | `claude-sonnet-medium` | Claude Sonnet 5.5, medium | `ANTHROPIC_API_KEY` |
@@ -56,6 +57,19 @@ Parallel submits the complete acceptance logic as a native match condition. Only
 `matched` candidates become its returned company list; its rejected/generated
 internal candidates remain in raw artifacts. Its match classification is not the
 benchmark's validity judgment.
+
+SpecStream compiles the full objective with `POST /v1/parse`, quotes the reading for the
+requested count with `POST /v1/capacity/quotes`, and authorizes that quote with
+`POST /v1/capacity/executions`, sending the quote's maximum as `confirm_max_cents`. Reading
+and quoting spend nothing; the quote is checkpointed so a resumed task authorizes the same
+quote with the same request key. An unrunnable reading fails before any paid request. The
+optional `max_cost_usd` refuses a quote above it. Polling reads `GET /v1/finds/{id}` and
+follows `next_cursor` on `GET /v1/finds/{id}/rows` (100 rows a page) until it is null.
+Each delivered row becomes a company in native order: its `identity` cell is the name, a
+`link`, website or domain cell is the website, other cells are kept as claims, and every
+cell and condition source URL is kept as a citation. Undelivered `possible` rows remain in
+raw artifacts only. A finished find keeps polling while its charge settlement is
+`pending`. Cancellation uses `POST /v1/finds/{id}/cancel`; there is no cleanup call.
 
 Foundational-model presets use native web search. There is no outer search agent,
 query expansion loop or list refill. OpenAI uses Responses, standard reasoning
@@ -104,7 +118,9 @@ Avina credits are inferred from returned signal types, not an unsafe shared-acco
 balance delta. Websets credits are inferred from native evaluated matches.
 
 Parallel uses its per-run plus native-match tariff. Exa Agent retains the API's
-reported charge. Grok exposes invoice-confirmed request cost through
+reported charge. SpecStream bills per delivered row; its public estimate sums the
+`billed_units` rates the find reports, and its confirmed charge is `amount_captured_cents`
+once `settlement_status` is `settled`. Grok exposes invoice-confirmed request cost through
 `usage.cost_in_usd_ticks / 10_000_000_000`, including native tool use. Other native
 models apply versioned rates to observed usage. Missing search usage makes a total
 USD estimate unknown rather than treating hidden search work as free. All raw
@@ -159,6 +175,7 @@ never inferred from a similarly named vendor.
 - [Avina Node public contract](https://github.com/Mesh-Interactive/mesh-analytics-backend/pull/273), [Python implementation](https://github.com/Mesh-Interactive/mesh-analytics-backend-python/pull/1796), [pricing](https://www.avina.io/pricing)
 - [Exa Websets](https://exa.ai/docs/websets/api/websets/create-a-webset), [Agent](https://exa.ai/docs/reference/agent-api/create-a-run), [Websets pricing](https://websets.exa.ai/websets/billing), [Agent pricing](https://exa.ai/docs/admin/pricing)
 - [Parallel FindAll](https://docs.parallel.ai/findall-api/findall-quickstart), [pricing](https://docs.parallel.ai/getting-started/pricing)
+- [SpecStream OpenAPI](https://api.specstream.ai/openapi.json), [agent guide](https://specstream.ai/agents.md), [pricing](https://specstream.ai/pricing)
 - [OpenAI web search](https://developers.openai.com/api/docs/guides/tools-web-search), [pricing](https://developers.openai.com/api/docs/pricing)
 - [Claude web search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool), [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs), [models and prices](https://platform.claude.com/docs/en/models/overview)
 - [Gemini Interactions](https://ai.google.dev/api/interactions-api), [grounding](https://ai.google.dev/gemini-api/docs/google-search), [pricing](https://ai.google.dev/gemini-api/docs/pricing)

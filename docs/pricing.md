@@ -39,6 +39,7 @@ evaluation costs remain visible too.
 | Exa Agent auto | $0.10 per compute unit + $0.005 per search, capped at $5 per completed run. |
 | Parallel core | $2 per native run + $0.15 per provider-matched entity. |
 | Parallel pro | $10 per native run + $1 per provider-matched entity. |
+| SpecStream | 5¢, 15¢ or $1 per delivered row, at the rate the API reports for each billed row; API-captured charge retained separately. |
 
 Subscription allocation assumes the entire included credit pool is used. It is neither the
 incremental cash cost of a query nor the amount a new account must pay. Avina's 6,500-credit
@@ -54,8 +55,9 @@ request is not automatically free. Unknown charges remain unknown.
 
 Sources: [Avina](https://www.avina.io/pricing),
 [Exa Websets](https://websets.exa.ai/websets/billing),
-[Exa Agent](https://exa.ai/docs/admin/pricing), and
-[Parallel](https://docs.parallel.ai/getting-started/pricing).
+[Exa Agent](https://exa.ai/docs/admin/pricing),
+[Parallel](https://docs.parallel.ai/getting-started/pricing), and
+[SpecStream](https://specstream.ai/pricing).
 
 ## Native web-search models
 

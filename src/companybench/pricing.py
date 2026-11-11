@@ -37,6 +37,7 @@ SOURCES = {
     "exa-websets": "https://websets.exa.ai/websets/billing",
     "exa-agent": "https://exa.ai/docs/admin/pricing",
     "parallel": "https://docs.parallel.ai/getting-started/pricing",
+    "specstream": "https://specstream.ai/pricing",
     "jev": "https://docs.typesafe.ai/models",
 }
 
@@ -107,6 +108,15 @@ def estimate_cost(
             amount = d(base) + d(matches) * d(match)
             cost.assumptions.append(
                 "Per native run and provider-matched entity; validity judged independently."
+            )
+    elif family == "specstream":
+        # The API names each billed row's rate and the captured charge once settled.
+        if "reported_usd" in usage.units:
+            cost.confirmed_usd = usage.units["reported_usd"]
+        if "billed_row_cents" in usage.units:
+            amount = d(usage.units["billed_row_cents"]) / d(100)
+            cost.assumptions.append(
+                "Per delivered row at the rate the API reports for it (5¢, 15¢ or $1); duplicates and contradicted rows are not billed."
             )
     elif family == "exa-agent":
         # Actual charges stay separate from public tariff estimates/discounts.
@@ -218,6 +228,10 @@ def estimate_max_cost(
         return exa_run_cap(
             options.get("effort", "auto" if name.endswith("auto") else "high"), options
         )
+    if name == "specstream":
+        # $1 is the highest per-row rate; no contact details are requested.
+        cap = options.get("max_cost_usd")
+        return min(float(target_count), float(cap)) if cap is not None else float(target_count)
     if name in {"parallel-core", "parallel-pro"}:
         return estimate_cost(
             name, Usage(units={"native_matches": target_count}), options=options

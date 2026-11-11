@@ -15,6 +15,7 @@ from companybench.providers.exa import ExaAgentProvider, ExaWebsetsProvider
 from companybench.providers.gemini import GeminiProvider
 from companybench.providers.openai import OpenAIProvider
 from companybench.providers.parallel import ParallelProvider
+from companybench.providers.specstream import SpecStreamProvider
 from companybench.providers.xai import XAIProvider
 
 PRESETS: dict[str, dict[str, Any]] = {
@@ -53,6 +54,12 @@ PRESETS: dict[str, dict[str, Any]] = {
         "description": "Parallel FindAll Pro",
         "api_key_env": "PARALLEL_API_KEY",
         "options": {"generator": "pro"},
+    },
+    "specstream": {
+        "adapter": "specstream",
+        "description": "SpecStream Deep Search",
+        "api_key_env": "SPECSTREAM_API_KEY",
+        "options": {},
     },
     "openai-sol-medium": {
         "adapter": "openai",
@@ -123,6 +130,7 @@ ADAPTERS = {
     "exa-websets": ExaWebsetsProvider,
     "exa-agent": ExaAgentProvider,
     "parallel": ParallelProvider,
+    "specstream": SpecStreamProvider,
     "openai": OpenAIProvider,
     "claude": AnthropicProvider,
     "gemini": GeminiProvider,

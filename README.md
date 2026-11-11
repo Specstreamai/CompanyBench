@@ -164,6 +164,7 @@ the first column with `--provider`.
 | `exa-agent-auto` | Exa Agent, auto effort |
 | `parallel-core` | Parallel FindAll, core |
 | `parallel-pro` | Parallel FindAll, pro |
+| `specstream` | SpecStream Deep Search |
 | `openai-sol-medium` | GPT-6.1 Sol, medium |
 | `openai-astra-max` | GPT-6 Astra, max |
 | `claude-sonnet-medium` | Claude Sonnet 5.5, medium |
