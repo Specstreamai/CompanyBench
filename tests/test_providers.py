@@ -6,8 +6,10 @@ import pytest
 
 from companybench.models import Criterion, Query, SearchJob, SearchRequest, Usage
 from companybench.pricing import estimate_cost, estimate_max_cost
+from companybench.providers.base import objective
 from companybench.providers.common import candidates_from_payload
 from companybench.providers.registry import PRESETS, provider_names, resolve
+from companybench.providers.specstream import company_row
 
 
 class FakeContext:
@@ -747,6 +749,23 @@ def specstream_find(status="completed", settlement="settled", captured=20):
 
 
 def specstream_row(entity, name, website, source):
+    # Delivered-row shape: identity, condition columns, the requested website and details.
+    website_cell = {
+        "column_id": "organization.website",
+        "label": "Website",
+        "value": website,
+        "display": website,
+        "provenance": {"field_id": "organization.website", "source_url": website},
+    }
+    if website is None:
+        website_cell = {
+            "column_id": "organization.website",
+            "label": "Website",
+            "value": None,
+            "display": "Not published",
+            "absence": "Not published",
+            "provenance": None,
+        }
     return {
         "spec_version": "accepted_row.v1",
         "entity_id": entity,
@@ -756,19 +775,35 @@ def specstream_row(entity, name, website, source):
         "cells": [
             {
                 "column_id": "identity",
-                "label": "Company",
+                "label": "Organization",
                 "value": name,
                 "display": name,
-                "provenance": {"field_id": "name", "source_url": source},
+                "provenance": {"field_id": "organization.name", "source_url": source},
             },
             {
-                "column_id": "organization.website",
-                "label": "Website",
-                "value": website,
-                "display": website,
-                "provenance": {"field_id": "website", "source_url": website},
+                "column_id": "condition:c1",
+                "label": "US software company",
+                "value": True,
+                "display": "Yes",
+                "provenance": {"field_id": "condition:c1", "source_url": source},
             },
-            {"column_id": "organization.city", "label": "City", "value": "Austin", "display": None},
+            website_cell,
+        ],
+        "details": [
+            {
+                "column_id": "organization.legal_name",
+                "label": "Legal name",
+                "value": f"{name} Inc.",
+                "display": f"{name} Inc.",
+                "provenance": {"field_id": "organization.legal_name", "source_url": source},
+            },
+            {
+                "column_id": "organization.address",
+                "label": "Address",
+                "value": "1 Main St, Austin, TX",
+                "display": "1 Main St, Austin, TX",
+                "provenance": None,
+            },
         ],
         "predicates": [
             {
@@ -807,6 +842,9 @@ async def test_specstream_compiles_quotes_and_authorizes_the_quoted_maximum(sear
     assert job.id == "fnd_1" and job.status == "queued"
     paths = [url.removeprefix("https://api.specstream.ai") for _, url, _ in context.calls]
     assert paths == ["/v1/parse", "/v1/capacity/quotes", "/v1/capacity/executions"]
+    asked = context.calls[0][2]["json"]["q"]
+    assert asked.startswith(objective(search_request))
+    assert asked.endswith("Bring back each company's official website.")
     assert [c[2].get("billable", False) for c in context.calls] == [False, False, True]
     assert context.calls[1][2]["json"]["requested_units"] == search_request.target_count
     authorize = context.calls[2][2]["json"]
@@ -896,7 +934,9 @@ async def test_specstream_reads_every_row_page_with_sources_and_settled_charge(s
         "https://alpha.example",
         "https://alpha.example/about#about",
     ]
-    assert alpha.claims["organization.city"] == "Austin"
+    assert alpha.claims["organization.address"] == "1 Main St, Austin, TX"
+    assert alpha.claims["organization.legal_name"] == "Alpha Inc."
+    assert "organization.website" not in alpha.claims
     assert alpha.claims["conditions"][0]["passed"] is True
     assert job.result.cost.confirmed_usd == pytest.approx(0.20)
     assert job.result.cost.public_usd == pytest.approx(0.20)
@@ -917,6 +957,20 @@ async def test_specstream_waits_for_settlement_and_keeps_partial_finds_partial(s
     assert job.status == "completed"
     assert job.result.status == "partial"
     assert job.result.cost.confirmed_usd == pytest.approx(0.20)
+
+
+def test_specstream_unpublished_website_is_not_a_domain():
+    row = specstream_row("ent_c", "Gamma", None, "https://registry.example/gamma")
+    row["cells"].append(
+        {"column_id": "link", "label": "Link", "value": "https://gamma.example", "display": None}
+    )
+    mapped = company_row(row)
+    assert mapped["website"] == "https://gamma.example"
+    assert mapped["organization.website"] == "Not published"
+    row["cells"].pop()
+    (candidate,) = candidates_from_payload([company_row(row)])
+    assert (candidate.name, candidate.website, candidate.domain) == ("Gamma", None, None)
+    assert not candidate.malformed
 
 
 @pytest.mark.asyncio

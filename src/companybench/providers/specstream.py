@@ -28,6 +28,10 @@ FIND_STATES: dict[str, JobStatus] = {
     "canceled": "cancelled",
     "expired": "failed",
 }
+# CompanyBench pools and credits a company only with a name and a hostname, so the
+# request asks for the website; a reading names it with this output field.
+WEBSITE_FIELD = "organization.website"
+WEBSITE_ASK = "Bring back each company's official website."
 
 
 def _text(value: Any) -> str | None:
@@ -42,23 +46,29 @@ def _cell_value(cell: dict[str, Any]) -> Any:
     return cell.get("display") if cell.get("display") is not None else cell.get("value")
 
 
+def _is_website(cell: dict[str, Any]) -> bool:
+    column = str(cell.get("column_id", "")).casefold()
+    label = str(cell.get("label", "")).casefold()
+    return column == "link" or any(word in column + label for word in ("website", "domain"))
+
+
 def company_row(row: dict[str, Any]) -> dict[str, Any]:
     """Map one delivered row; every cell and condition source stays with its company."""
     cells = [c for c in [*row.get("cells", []), *row.get("details", [])] if isinstance(c, dict)]
-    name = website = None
+    # The requested website arrives in the column named by its output field. Only a
+    # read value counts; an absent cell's display ("Not published") is not a website.
+    candidates = [c for c in cells if c.get("column_id") == WEBSITE_FIELD]
+    candidates += [c for c in cells if c.get("column_id") != WEBSITE_FIELD and _is_website(c)]
+    website_cell = next((c for c in candidates if _text(c.get("value"))), None)
+    name = None
     claims: dict[str, Any] = {}
     for cell in cells:
         column = str(cell.get("column_id", ""))
-        label = str(cell.get("label", "")).casefold()
         if column == "identity" and name is None:
             name = _text(cell.get("display")) or _text(cell.get("value"))
-        elif website is None and (
-            column == "link"
-            or any(word in column.casefold() + label for word in ("website", "domain"))
-        ):
-            website = _text(cell.get("value")) or _text(cell.get("display"))
-        else:
+        elif cell is not website_cell:
             claims[column] = _cell_value(cell)
+    website = _text(website_cell.get("value")) if website_cell else None
     sources = [(c.get("provenance") or {}).get("source_url") for c in cells]
     sources += [p.get("source_url") for p in row.get("predicates", []) if isinstance(p, dict)]
     return {
@@ -103,7 +113,7 @@ class SpecStreamProvider(HTTPProvider, JobProvider):
     async def submit(self, request: SearchRequest, context: Any) -> SearchJob:
         if request.target_count > 10000:
             raise ValueError("SpecStream quotes accept at most 10000 results per find")
-        query = objective(request)
+        query = f"{objective(request)}\n{WEBSITE_ASK}"
         if len(query) > 16000:
             raise ValueError("SpecStream's plain-language request is limited to 16000 characters")
         headers = self.headers()
