@@ -58,17 +58,20 @@ Parallel submits the complete acceptance logic as a native match condition. Only
 internal candidates remain in raw artifacts. Its match classification is not the
 benchmark's validity judgment.
 
-SpecStream compiles the full objective with `POST /v1/parse`, adding one sentence that asks
-for each company's official website, because identity pooling needs a hostname. It quotes
-the reading for the requested count with `POST /v1/capacity/quotes`, and authorizes that quote with
+SpecStream reads a request in plain words into conditions, so instruction lines would be
+read as conditions too. Its adapter sends `POST /v1/parse` the query sentence with the
+requested count after its leading "Find", the acceptance text as a second sentence, and
+one sentence asking for each company's official website, because identity pooling needs a
+hostname. This is the query and acceptance content of `objective(request)` without its
+labels and rule dump. It quotes the reading for the requested count with `POST /v1/capacity/quotes`, and authorizes that quote with
 `POST /v1/capacity/executions`, sending the quote's maximum as `confirm_max_cents`. Reading
 and quoting spend nothing; the quote is checkpointed so a resumed task authorizes the same
 quote with the same request key. An unrunnable reading fails before any paid request. The
 optional `max_cost_usd` refuses a quote above it. Polling reads `GET /v1/finds/{id}` and
 follows `next_cursor` on `GET /v1/finds/{id}/rows` (100 rows a page) until it is null.
 Each delivered row becomes a company in native order: its `identity` cell is the name, the
-`organization.website` cell's read value (else a `link`, website or domain cell) is the
-website, an unpublished website stays empty, other cells are kept as claims, and every
+read value of the `organization.website` or `knowledge.official_sites` cell (the first URL
+of a list; else a `link`, website or domain cell) is the website, an unpublished website stays empty, other cells are kept as claims, and every
 cell and condition source URL is kept as a citation. Undelivered `possible` rows remain in
 raw artifacts only. A finished find keeps polling while its charge settlement is
 `pending`. Cancellation uses `POST /v1/finds/{id}/cancel`; there is no cleanup call.

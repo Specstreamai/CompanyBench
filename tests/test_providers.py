@@ -6,10 +6,9 @@ import pytest
 
 from companybench.models import Criterion, Query, SearchJob, SearchRequest, Usage
 from companybench.pricing import estimate_cost, estimate_max_cost
-from companybench.providers.base import objective
 from companybench.providers.common import candidates_from_payload
 from companybench.providers.registry import PRESETS, provider_names, resolve
-from companybench.providers.specstream import company_row
+from companybench.providers.specstream import company_row, request_text
 
 
 class FakeContext:
@@ -842,9 +841,7 @@ async def test_specstream_compiles_quotes_and_authorizes_the_quoted_maximum(sear
     assert job.id == "fnd_1" and job.status == "queued"
     paths = [url.removeprefix("https://api.specstream.ai") for _, url, _ in context.calls]
     assert paths == ["/v1/parse", "/v1/capacity/quotes", "/v1/capacity/executions"]
-    asked = context.calls[0][2]["json"]["q"]
-    assert asked.startswith(objective(search_request))
-    assert asked.endswith("Bring back each company's official website.")
+    assert context.calls[0][2]["json"]["q"] == request_text(search_request)
     assert [c[2].get("billable", False) for c in context.calls] == [False, False, True]
     assert context.calls[1][2]["json"]["requested_units"] == search_request.target_count
     authorize = context.calls[2][2]["json"]
@@ -957,6 +954,71 @@ async def test_specstream_waits_for_settlement_and_keeps_partial_finds_partial(s
     assert job.status == "completed"
     assert job.result.status == "partial"
     assert job.result.cost.confirmed_usd == pytest.approx(0.20)
+
+
+def test_specstream_request_text_carries_query_count_and_acceptance_without_scaffolding(
+    search_request,
+):
+    text = request_text(search_request)
+    assert text == ("Find 50 US software companies\nBring back each company's official website.")
+    query = search_request.query.model_copy(
+        update={
+            "query": "Find wholesale distributors headquartered in Japan.",
+            "acceptance": "Company sells goods wholesale to other businesses",
+        }
+    )
+    request = search_request.model_copy(update={"query": query, "target_count": 10})
+    assert request_text(request).splitlines() == [
+        "Find 10 wholesale distributors headquartered in Japan.",
+        "Company sells goods wholesale to other businesses.",
+        "Bring back each company's official website.",
+    ]
+    for scaffold in ("Conditions:", "Acceptance logic", "Company unit", "Reference time"):
+        assert scaffold not in request_text(request)
+    restated = query.model_copy(update={"acceptance": "headquartered in Japan"})
+    assert len(request_text(request.model_copy(update={"query": restated})).splitlines()) == 2
+    unled = query.model_copy(update={"query": "Wholesale distributors in Japan."})
+    assert request_text(request.model_copy(update={"query": unled})).startswith(
+        "Find 10 companies. Wholesale distributors in Japan."
+    )
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "website"),
+    [
+        ("organization.website", "https://alpha.example", "https://alpha.example"),
+        (
+            "knowledge.official_sites",
+            ["https://alpha.example", "https://alpha.example/de"],
+            "https://alpha.example",
+        ),
+        ("knowledge.official_sites", [{"url": "https://alpha.example"}], "https://alpha.example"),
+        ("knowledge.official_sites", {"url": "https://alpha.example"}, "https://alpha.example"),
+    ],
+)
+def test_specstream_website_shapes(column, value, website):
+    row = specstream_row("ent_a", "Alpha", None, "https://registry.example/alpha")
+    row["cells"].append(
+        {"column_id": column, "label": "Official websites", "value": value, "display": None}
+    )
+    mapped = company_row(row)
+    assert mapped["website"] == website
+    (candidate,) = candidates_from_payload([mapped])
+    assert candidate.domain == "alpha.example"
+
+
+def test_specstream_absent_website_value_is_never_used():
+    row = specstream_row("ent_a", "Alpha", None, "https://registry.example/alpha")
+    row["cells"].append(
+        {
+            "column_id": "knowledge.official_sites",
+            "label": "Official websites",
+            "value": "https://stale.example",
+            "display": "Couldn't check",
+            "absence": "Couldn't check",
+        }
+    )
+    assert company_row(row)["website"] is None
 
 
 def test_specstream_unpublished_website_is_not_a_domain():

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 from urllib.parse import quote, urlencode
 
 from companybench.models import SearchJob, SearchRequest, SearchResult, Usage
 from companybench.pricing import estimate_cost
-from companybench.providers.base import JobProvider, objective
+from companybench.providers.base import JobProvider
 from companybench.providers.common import (
     HTTPProvider,
     JobStatus,
@@ -29,9 +30,30 @@ FIND_STATES: dict[str, JobStatus] = {
     "expired": "failed",
 }
 # CompanyBench pools and credits a company only with a name and a hostname, so the
-# request asks for the website; a reading names it with this output field.
-WEBSITE_FIELD = "organization.website"
+# request asks for the website. A reading names it with one of these output fields.
+WEBSITE_FIELDS = ("organization.website", "knowledge.official_sites")
 WEBSITE_ASK = "Bring back each company's official website."
+
+
+def request_text(request: SearchRequest) -> str:
+    """The query and its acceptance conditions in plain words, without instruction lines.
+
+    SpecStream reads every clause of a request as a condition, so the labels and rule
+    dump in ``objective(request)`` would become conditions of their own. The count goes
+    into the query's leading "Find" so the reading's limit is the target count.
+    """
+    sentence = request.query.query.strip()
+    lead = re.match(r"find\s+", sentence, re.IGNORECASE)
+    if lead:
+        sentence = f"{sentence[: lead.end()]}{request.target_count} {sentence[lead.end() :]}"
+    else:
+        sentence = f"Find {request.target_count} companies. {sentence}"
+    parts = [sentence]
+    acceptance = request.query.acceptance.strip()
+    if acceptance and acceptance not in sentence:
+        parts.append(acceptance if acceptance.endswith((".", "!", "?")) else acceptance + ".")
+    parts.append(WEBSITE_ASK)
+    return "\n".join(parts)
 
 
 def _text(value: Any) -> str | None:
@@ -40,6 +62,15 @@ def _text(value: Any) -> str | None:
     if isinstance(value, dict) and isinstance(value.get("name"), str):
         return value["name"]
     return None
+
+
+def _url(value: Any) -> str | None:
+    """A website value: a string, the first string of a list, or a dict's url."""
+    if isinstance(value, list):
+        return next((v for v in (_url(item) for item in value) if v), None)
+    if isinstance(value, dict):
+        value = value.get("url")
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _cell_value(cell: dict[str, Any]) -> Any:
@@ -57,9 +88,9 @@ def company_row(row: dict[str, Any]) -> dict[str, Any]:
     cells = [c for c in [*row.get("cells", []), *row.get("details", [])] if isinstance(c, dict)]
     # The requested website arrives in the column named by its output field. Only a
     # read value counts; an absent cell's display ("Not published") is not a website.
-    candidates = [c for c in cells if c.get("column_id") == WEBSITE_FIELD]
-    candidates += [c for c in cells if c.get("column_id") != WEBSITE_FIELD and _is_website(c)]
-    website_cell = next((c for c in candidates if _text(c.get("value"))), None)
+    found = [c for c in cells if c.get("column_id") in WEBSITE_FIELDS]
+    found += [c for c in cells if c.get("column_id") not in WEBSITE_FIELDS and _is_website(c)]
+    website_cell = next((c for c in found if not c.get("absence") and _url(c.get("value"))), None)
     name = None
     claims: dict[str, Any] = {}
     for cell in cells:
@@ -68,7 +99,7 @@ def company_row(row: dict[str, Any]) -> dict[str, Any]:
             name = _text(cell.get("display")) or _text(cell.get("value"))
         elif cell is not website_cell:
             claims[column] = _cell_value(cell)
-    website = _text(website_cell.get("value")) if website_cell else None
+    website = _url(website_cell.get("value")) if website_cell else None
     sources = [(c.get("provenance") or {}).get("source_url") for c in cells]
     sources += [p.get("source_url") for p in row.get("predicates", []) if isinstance(p, dict)]
     return {
@@ -113,7 +144,7 @@ class SpecStreamProvider(HTTPProvider, JobProvider):
     async def submit(self, request: SearchRequest, context: Any) -> SearchJob:
         if request.target_count > 10000:
             raise ValueError("SpecStream quotes accept at most 10000 results per find")
-        query = f"{objective(request)}\n{WEBSITE_ASK}"
+        query = request_text(request)
         if len(query) > 16000:
             raise ValueError("SpecStream's plain-language request is limited to 16000 characters")
         headers = self.headers()
